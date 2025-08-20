@@ -66,36 +66,20 @@ func (c *Cache[K, V]) Put(key K, val V) error {
 		return err
 	}
 
-	var i, n uint64
 	min := uint64((1 << 64) - 1)
 	l := c.len
-	x := -1
-
+	var i, n uint64
 	for ; i < l; i++ {
 		if c.seen[i] < min {
 			n = i
 			min = c.seen[i]
 		}
+		// no eviction necessary, just overwrite the current value
 		if key == c.keys[i] {
-			x = int(i)
-			i++
-			break
+			c.vals[i] = val
+			c.seen[i] = c.count
+			return err
 		}
-	}
-
-	// once the key has been found, there's not need to continue comparing
-	for ; i < l; i++ {
-		if c.seen[i] < min {
-			n = i
-			min = c.seen[i]
-		}
-	}
-
-	// no eviction necessary, just overwrite the current value
-	if x != -1 {
-		c.vals[x] = val
-		c.seen[x] = c.count
-		return err
 	}
 
 	// sadly, someone must go
