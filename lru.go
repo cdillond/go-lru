@@ -19,7 +19,7 @@ type Cache[K comparable, V any] struct {
 
 // New creates a new Cache of size size. If evict is non-nil, it is called each time a key-value
 // pair is evicted. Since the lookup is O(n), cache sizes should remain small.
-func New[K comparable, V any](size uint, evict func(K, V) error) *Cache[K, V] {
+func New[K comparable, V any](size uint64, evict func(K, V) error) *Cache[K, V] {
 	return &Cache[K, V]{
 		keys:  make([]K, size),
 		vals:  make([]V, size),
