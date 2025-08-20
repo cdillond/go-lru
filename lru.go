@@ -78,6 +78,16 @@ func (c *Cache[K, V]) Put(key K, val V) error {
 		}
 		if key == c.keys[i] {
 			x = int(i)
+			i++
+			break
+		}
+	}
+
+	// once the key has been found, there's not need to continue comparing
+	for ; i < l; i++ {
+		if c.seen[i] < min {
+			n = i
+			min = c.seen[i]
 		}
 	}
 
