@@ -34,8 +34,7 @@ func (c *Cache[K, V]) Get(key K) (V, bool) {
 	c.m.Lock()
 	defer c.m.Unlock()
 	c.count++
-	l := c.len
-	var i uint64
+	i, l := uint64(0), c.len
 	for ; i < l; i++ {
 		if c.keys[i] == key {
 			c.seen[i] = c.count
@@ -58,17 +57,22 @@ func (c *Cache[K, V]) Put(key K, val V) error {
 		return err
 	}
 
-	if c.len < uint64(len(c.keys)) {
-		c.keys[c.len] = key
-		c.vals[c.len] = val
-		c.seen[c.len] = c.count
-		c.len++
+	i, l := uint64(0), c.len
+	if l < uint64(len(c.keys)) {
+		// first check if the value is already cached
+		for ; i < l && c.keys[i] != key; i++ {
+		}
+		c.vals[i] = val
+		c.seen[i] = c.count
+		if i == l {
+			c.keys[i] = key
+			c.len++
+		}
 		return err
 	}
 
 	min := uint64((1 << 64) - 1)
-	l := c.len
-	var i, n uint64
+	var n uint64
 	for ; i < l; i++ {
 		if c.seen[i] < min {
 			n = i
@@ -112,8 +116,7 @@ func (c *Cache[K, V]) Clear() error {
 	var err error
 
 	if c.evict != nil {
-		l := c.len
-		var i uint64
+		i, l := uint64(0), c.len
 		for ; i < l; i++ {
 			err = errors.Join(err, c.evict(c.keys[i], c.vals[i]))
 		}
@@ -136,6 +139,20 @@ func (c *Cache[K, V]) All() iter.Seq2[K, V] {
 		i, l := uint64(0), c.len
 		for ; i < l; i++ {
 			if !yield(c.keys[i], c.vals[i]) {
+				return
+			}
+		}
+	}
+}
+
+// Keys returns an iter.Seq that iterates over all Cache keys.
+func (c *Cache[K, V]) Keys() iter.Seq[K] {
+	return func(yield func(K) bool) {
+		c.m.Lock()
+		defer c.m.Unlock()
+		i, l := uint64(0), c.len
+		for ; i < l; i++ {
+			if !yield(c.keys[i]) {
 				return
 			}
 		}
