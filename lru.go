@@ -13,7 +13,7 @@ type node[K comparable, V any] struct {
 	val  V
 }
 
-// A Cache is a generic, concurrency-safe least-recently used (LRU) cache.
+// A Cache is a generic, concurrency-safe least-recently used (LRU) cache. A Cache should not be copied.
 type Cache[K comparable, V any] struct {
 	m     sync.Mutex
 	len   int
