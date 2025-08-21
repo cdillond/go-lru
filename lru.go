@@ -25,13 +25,13 @@ type Cache[K comparable, V any] struct {
 	keys  map[K]int
 }
 
-// New creates a new Cache of size size. If evict is non-nil, it is called each time a key-value
+// New creates a new Cache with a capacity of cap items. If evict is non-nil, it is called each time a key-value
 // pair is evicted.
-func New[K comparable, V any](size uint64, evict func(K, V) error) *Cache[K, V] {
+func New[K comparable, V any](cap uint64, evict func(K, V) error) *Cache[K, V] {
 	return &Cache[K, V]{
-		cap:   size,
-		keys:  make(map[K]int, size),
-		data:  make([]node[K, V], size),
+		cap:   cap,
+		keys:  make(map[K]int, cap),
+		data:  make([]node[K, V], cap),
 		evict: evict,
 	}
 }
