@@ -6,41 +6,68 @@ import (
 	"sync"
 )
 
-// A Cache is a generic least-recently used (LRU) cache.
+type node[K comparable, V any] struct {
+	next int
+	last int
+	key  K
+	val  V
+}
+
+// A Cache is a generic, concurrency-safe least-recently used (LRU) cache.
 type Cache[K comparable, V any] struct {
 	m     sync.Mutex
-	keys  []K
-	vals  []V
-	seen  []uint64
-	len   uint64
-	count uint64
+	len   int
+	head  int
+	tail  int
+	cap   uint64
 	evict func(K, V) error
+	data  []node[K, V]
+	keys  map[K]int
 }
 
 // New creates a new Cache of size size. If evict is non-nil, it is called each time a key-value
-// pair is evicted. Since the lookup is O(n), cache sizes should remain small.
+// pair is evicted.
 func New[K comparable, V any](size uint64, evict func(K, V) error) *Cache[K, V] {
 	return &Cache[K, V]{
-		keys:  make([]K, size),
-		vals:  make([]V, size),
-		seen:  make([]uint64, size),
+		cap:   size,
+		keys:  make(map[K]int, size),
+		data:  make([]node[K, V], size),
 		evict: evict,
 	}
 }
 
+// promote moves the node at index i to the front of the queue.
+func (c *Cache[K, V]) promote(i int) {
+	ptr := &c.data[i]
+
+	if i == c.head {
+		return
+	}
+
+	if i == c.tail {
+		c.tail = ptr.last
+	} else {
+		c.data[ptr.last].next = ptr.next
+		c.data[ptr.next].last = ptr.last
+	}
+
+	ptr.next = c.head
+	c.data[c.head].last = i
+	c.head = i
+}
+
 // Get returns the cached value associated with key and a bool, which is true if the key was found
-// and false otherwise. The lookup is O(n).
+// and false otherwise.
 func (c *Cache[K, V]) Get(key K) (V, bool) {
 	c.m.Lock()
 	defer c.m.Unlock()
-	c.count++
-	i, l := uint64(0), c.len
-	for ; i < l; i++ {
-		if c.keys[i] == key {
-			c.seen[i] = c.count
-			return c.vals[i], true
-		}
+	i, ok := c.keys[key]
+	if ok {
+		val := c.data[i].val
+		c.promote(i)
+		return val, true
 	}
+	// cache miss, nothing to do
 	return *new(V), false
 }
 
@@ -51,61 +78,49 @@ func (c *Cache[K, V]) Put(key K, val V) error {
 	c.m.Lock()
 	defer c.m.Unlock()
 	var err error
-	c.count++
 
-	if len(c.keys) == 0 {
+	if c.cap == 0 {
 		return err
 	}
 
-	i, l := uint64(0), c.len
-	if l < uint64(len(c.keys)) {
-		// first check if the value is already cached
-		for ; i < l && c.keys[i] != key; i++ {
-		}
-		c.vals[i] = val
-		c.seen[i] = c.count
-		if i == l {
-			c.keys[i] = key
-			c.len++
-		}
+	// if the key is cached, just update the val and move to front
+	i, ok := c.keys[key]
+	if ok {
+		c.data[i].val = val
+		c.promote(i)
 		return err
 	}
 
-	min := uint64((1 << 64) - 1)
-	var n uint64
-	for ; i < l; i++ {
-		if c.seen[i] < min {
-			n = i
-			min = c.seen[i]
+	// if there's space, no need to evict
+	if uint64(c.len) < c.cap {
+		// take the highest unused
+		c.data[c.len] = node[K, V]{
+			next: c.head,
+			key:  key,
+			val:  val,
 		}
-		// no eviction necessary, just overwrite the current value
-		if key == c.keys[i] {
-			c.vals[i] = val
-			c.seen[i] = c.count
-			return err
-		}
+		c.data[c.head].last = c.len
+		// no need to update the tail; the initial tail will be at index 0
+		c.head = c.len
+		c.keys[key] = c.len
+		c.len++
+		return err
 	}
 
-	// sadly, someone must go
+	victim := &c.data[c.tail]
 	if c.evict != nil {
-		err = c.evict(c.keys[n], c.vals[n])
+		err = c.evict(victim.key, victim.val)
 	}
 
-	c.keys[n] = key
-	c.vals[n] = val
-	c.seen[n] = c.count
+	// take from the tail
+	delete(c.keys, victim.key)
+	c.keys[key] = c.tail
 
+	victim.key = key
+	victim.val = val
+
+	c.promote(c.tail)
 	return err
-}
-
-// Grow increases the Cache's capacity by more entries.
-func (c *Cache[K, V]) Grow(more uint64) {
-	c.m.Lock()
-	defer c.m.Unlock()
-
-	c.keys = append(c.keys, make([]K, more)...)
-	c.vals = append(c.vals, make([]V, more)...)
-	c.seen = append(c.seen, make([]uint64, more)...)
 }
 
 // Clear evicts all entries from the Cache (calling the evict func if it exists) and resets the Cache.
@@ -116,18 +131,14 @@ func (c *Cache[K, V]) Clear() error {
 	var err error
 
 	if c.evict != nil {
-		i, l := uint64(0), c.len
-		for ; i < l; i++ {
-			err = errors.Join(err, c.evict(c.keys[i], c.vals[i]))
+		var n node[K, V]
+		for _, n = range c.data[:c.len] {
+			err = errors.Join(err, c.evict(n.key, n.val))
 		}
 	}
-
+	clear(c.data[:c.len])
 	clear(c.keys)
-	clear(c.vals)
-	clear(c.seen)
 	c.len = 0
-	c.count = 0
-
 	return err
 }
 
@@ -136,23 +147,37 @@ func (c *Cache[K, V]) All() iter.Seq2[K, V] {
 	return func(yield func(K, V) bool) {
 		c.m.Lock()
 		defer c.m.Unlock()
-		i, l := uint64(0), c.len
-		for ; i < l; i++ {
-			if !yield(c.keys[i], c.vals[i]) {
+		var n node[K, V]
+		for _, n = range c.data[:c.len] {
+			if !yield(n.key, n.val) {
 				return
 			}
 		}
 	}
 }
 
-// Keys returns an iter.Seq that iterates over all Cache keys.
+// Keys returns an iter.Seq that iterates over all cached keys.
 func (c *Cache[K, V]) Keys() iter.Seq[K] {
 	return func(yield func(K) bool) {
 		c.m.Lock()
 		defer c.m.Unlock()
-		i, l := uint64(0), c.len
-		for ; i < l; i++ {
-			if !yield(c.keys[i]) {
+		var n node[K, V]
+		for _, n = range c.data[:c.len] {
+			if !yield(n.key) {
+				return
+			}
+		}
+	}
+}
+
+// Values returns an iter.Seq that iterates over all cached values.
+func (c *Cache[K, V]) Values() iter.Seq[V] {
+	return func(yield func(V) bool) {
+		c.m.Lock()
+		defer c.m.Unlock()
+		var n node[K, V]
+		for _, n = range c.data[:c.len] {
+			if !yield(n.val) {
 				return
 			}
 		}
